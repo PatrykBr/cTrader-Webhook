@@ -1,9 +1,13 @@
 import os
 from flask import Flask, request, jsonify
 from ctrader_open_api import Client, Protobuf, TcpProtocol, Auth, EndPoints
-from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
-from ctrader_open_api.messages.OpenApiMessages_pb2 import *
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
+from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoOAPayloadType
+from ctrader_open_api.messages.OpenApiMessages_pb2 import (
+    ProtoOAApplicationAuthReq,
+    ProtoOANewOrderReq,
+    ProtoOAOrderType,
+    ProtoOATradeSide
+)
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
 from threading import Thread
@@ -25,6 +29,11 @@ IS_DEMO = os.environ.get('CTRADER_IS_DEMO', 'True').lower() == 'true'
 # Global variables
 client = None
 is_authenticated = False
+
+# Define constants
+ORDER_TYPE_MARKET = ProtoOAOrderType.OA_MARKET
+TRADE_SIDE_BUY = ProtoOATradeSide.BUY
+TRADE_SIDE_SELL = ProtoOATradeSide.SELL
 
 def setup_ctrader_client():
     global client
@@ -73,12 +82,16 @@ def place_order(symbol, action, volume):
         raise Exception("Not authenticated with cTrader")
     
     request = ProtoOANewOrderReq()
-    request.accountId = int(ACCOUNT_ID)
-    request.symbolId = symbol
-    request.orderType = ORDER_TYPE_MARKET
-    request.tradeSide = TRADE_SIDE_BUY if action.lower() == 'buy' else TRADE_SIDE_SELL
-    request.volume = int(volume * 100)  # Convert to cents
-    request.comment = "Order from TradingView"
+    try:
+        request.ctidTraderAccountId = int(ACCOUNT_ID)
+        request.symbolId = symbol
+        request.orderType = ORDER_TYPE_MARKET
+        request.tradeSide = TRADE_SIDE_BUY if action.lower() == 'buy' else TRADE_SIDE_SELL
+        request.volume = int(volume * 100)  # Convert to cents
+        request.comment = "Order from TradingView"
+    except AttributeError as e:
+        logger.error(f"AttributeError in place_order: {str(e)}")
+        raise Exception(f"Error setting order attributes: {str(e)}")
     
     deferred = client.send(request)
     return deferred
@@ -124,7 +137,7 @@ def webhook():
             order_deferred = place_order(symbol, action, quantity)
             
             def on_order_response(message):
-                if message.payloadType == ProtoOAPayloadType.PROTO_OA_ORDER_RES:
+                if message.payloadType == ProtoOAPayloadType.PROTO_OA_EXECUTION_EVENT:
                     logger.info(f"Order placed successfully: {message.orderId}")
                     return jsonify({"message": "Order placed successfully", "order_id": message.orderId}), 200
                 else:
