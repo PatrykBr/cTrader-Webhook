@@ -3,22 +3,18 @@ from flask import Flask, request, jsonify
 from ctrader_open_api import Client, TcpProtocol
 from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq, ProtoOAAccountAuthReq, ProtoOANewOrderReq
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAOrderType, ProtoOATradeSide
-from dotenv import load_dotenv
 from twisted.internet import reactor
-
-# Load environment variables
-load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
 
 # cTrader configuration
-HOST = os.getenv('CTRADER_HOST', 'demo.ctraderapi.com')
-PORT = int(os.getenv('CTRADER_PORT', '5035'))
-APP_CLIENT_ID = os.getenv('APP_CLIENT_ID')
-APP_CLIENT_SECRET = os.getenv('APP_CLIENT_SECRET')
-ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
-ACCOUNT_ID = int(os.getenv('ACCOUNT_ID'))
+HOST = os.environ('CTRADER_HOST', 'demo.ctraderapi.com')
+PORT = int(os.environ('CTRADER_PORT', '5035'))
+APP_CLIENT_ID = os.environ('APP_CLIENT_ID')
+APP_CLIENT_SECRET = os.environ('APP_CLIENT_SECRET')
+ACCESS_TOKEN = os.environ('ACCESS_TOKEN')
+ACCOUNT_ID = int(os.environ('ACCOUNT_ID'))
 
 # Initialize cTrader client
 client = Client(HOST, PORT, TcpProtocol)
