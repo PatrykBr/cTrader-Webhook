@@ -53,10 +53,12 @@ CLIENT_ID = os.environ.get('CTRADER_CLIENT_ID')
 CLIENT_SECRET = os.environ.get('CTRADER_CLIENT_SECRET')
 ACCOUNT_ID = os.environ.get('CTRADER_ACCOUNT_ID')
 IS_DEMO = os.environ.get('CTRADER_IS_DEMO', 'True').lower() == 'true'
+ACCESS_TOKEN = os.environ.get('CTRADER_ACCESS_TOKEN')
 
 # Global variables
 client = None
 is_authenticated = False
+is_account_authenticated = False
 
 # Symbol to ID mapping
 symbol_to_id = {
@@ -91,6 +93,8 @@ def disconnected(client, reason):
     logger.warning(f"Disconnected from cTrader: {reason}")
     global is_authenticated
     is_authenticated = False
+    global is_account_authenticated
+    is_account_authenticated = False
 
 def on_message_received(client, message):
     logger.debug(f"Message received: {Protobuf.extract(message)}")
@@ -100,15 +104,31 @@ def on_auth_response(message):
     if message.payloadType == ProtoOAPayloadType.PROTO_OA_APPLICATION_AUTH_RES:
         logger.info("Authentication successful")
         is_authenticated = True
+        # Send account authentication request
+        send_account_auth_request()
     else:
         logger.error(f"Unexpected response during authentication: {message}")
+
+def send_account_auth_request():
+    request = ProtoOAAccountAuthReq()
+    request.ctidTraderAccountId = int(ACCOUNT_ID)
+    request.accessToken = ACCESS_TOKEN
+    client.send(request).addCallbacks(on_account_auth_response, on_error)
+
+def on_account_auth_response(message):
+    global is_account_authenticated
+    if message.payloadType == ProtoOAPayloadType.PROTO_OA_ACCOUNT_AUTH_RES:
+        logger.info("Account authentication successful")
+        is_account_authenticated = True
+    else:
+        logger.error(f"Unexpected response during account authentication: {message}")
 
 def on_error(failure):
     logger.error(f"Error: {failure}")
 
 def place_order(symbol, action, volume):
-    if not is_authenticated:
-        raise Exception("Not authenticated with cTrader")
+    if not is_authenticated or not is_account_authenticated:
+        raise Exception("Not authenticated with cTrader or account not authenticated")
     
     request = ProtoOANewOrderReq()
     try:
@@ -133,7 +153,8 @@ def root():
     return jsonify({
         "message": "TradingView to cTrader Webhook Service",
         "status": "running",
-        "authenticated": is_authenticated
+        "authenticated": is_authenticated,
+        "account_authenticated": is_account_authenticated
     }), 200
 
 @app.route('/webhook', methods=['POST'])
@@ -188,7 +209,7 @@ def webhook():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "authenticated": is_authenticated}), 200
+    return jsonify({"status": "healthy", "authenticated": is_authenticated, "account_authenticated": is_account_authenticated}), 200
 
 if __name__ == '__main__':
     setup_ctrader_client()
