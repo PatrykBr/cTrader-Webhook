@@ -8,6 +8,7 @@ from twisted.internet import reactor
 from twisted.internet.defer import Deferred
 from threading import Thread
 import logging
+import json
 
 app = Flask(__name__)
 
@@ -94,7 +95,22 @@ def root():
 def webhook():
     if request.method == 'POST':
         try:
-            data = request.json
+            # Try to parse JSON data regardless of Content-Type
+            try:
+                data = request.get_json(force=True)
+            except Exception as json_error:
+                # If JSON parsing fails, try to parse the data as a string
+                data_str = request.data.decode('utf-8')
+                # Assuming the data is in the format: symbol,action,quantity
+                parts = data_str.split(',')
+                if len(parts) != 3:
+                    raise ValueError("Invalid data format")
+                data = {
+                    'symbol': parts[0],
+                    'action': parts[1],
+                    'quantity': float(parts[2])
+                }
+            
             logger.info(f"Received webhook data: {data}")
             
             symbol = data.get('symbol')
