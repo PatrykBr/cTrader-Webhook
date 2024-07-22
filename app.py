@@ -66,9 +66,14 @@ def send_order(symbol_id, order_type, trade_side, volume, price=None):
 def on_order_response(response):
     print(f"Order placed: {response}")
 
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({"status": "success", "message": "Welcome to the cTrader API webhook server"}), 200
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
+    print(f"Received data: {data}")  # Debug print
     
     if not data:
         return jsonify({"status": "error", "message": "No JSON data received"}), 400
