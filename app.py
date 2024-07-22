@@ -1,217 +1,92 @@
-# app.py
-
 import os
 from flask import Flask, request, jsonify
-from ctrader_open_api import Client, Protobuf, TcpProtocol, Auth, EndPoints
-from ctrader_open_api.endpoints import EndPoints
-from ctrader_open_api.messages.OpenApiMessages_pb2 import (
-    ProtoOAApplicationAuthReq,
-    ProtoOAApplicationAuthRes,
-    ProtoOANewOrderReq,
-    ProtoOAExecutionEvent,
-    ProtoOASubscribeSpotsReq,
-    ProtoOAUnsubscribeSpotsReq,
-    ProtoOAVersionReq,
-    ProtoOAGetAccountListByAccessTokenReq,
-    ProtoOAAccountLogoutReq,
-    ProtoOAAccountAuthReq,
-    ProtoOAAssetListReq,
-    ProtoOAAssetClassListReq,
-    ProtoOASymbolCategoryListReq,
-    ProtoOASymbolsListReq,
-    ProtoOATraderReq,
-    ProtoOAReconcileReq,
-    ProtoOAGetTrendbarsReq,
-    ProtoOAGetTickDataReq,
-    ProtoOAClosePositionReq,
-    ProtoOACancelOrderReq,
-    ProtoOADealOffsetListReq,
-    ProtoOAGetPositionUnrealizedPnLReq,
-    ProtoOAOrderDetailsReq,
-    ProtoOAOrderListByPositionIdReq,
-    ProtoOAErrorRes
-)
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import (
-    ProtoOAOrderType,
-    ProtoOATradeSide,
-    ProtoOAPayloadType
-)
+from ctrader_open_api import Client, TcpProtocol
+from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq, ProtoOAAccountAuthReq, ProtoOANewOrderReq
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAOrderType, ProtoOATradeSide
+from dotenv import load_dotenv
 from twisted.internet import reactor
-from twisted.internet.defer import Deferred
-from threading import Thread
-import logging
-import json
 
+# Load environment variables
+load_dotenv()
+
+# Initialize Flask app
 app = Flask(__name__)
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# cTrader configuration
+HOST = os.getenv('CTRADER_HOST', 'demo.ctraderapi.com')
+PORT = int(os.getenv('CTRADER_PORT', '5035'))
+APP_CLIENT_ID = os.getenv('APP_CLIENT_ID')
+APP_CLIENT_SECRET = os.getenv('APP_CLIENT_SECRET')
+ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
+ACCOUNT_ID = int(os.getenv('ACCOUNT_ID'))
 
-# cTrader API configuration
-CLIENT_ID = os.environ.get('CTRADER_CLIENT_ID')
-CLIENT_SECRET = os.environ.get('CTRADER_CLIENT_SECRET')
-ACCOUNT_ID = os.environ.get('CTRADER_ACCOUNT_ID')
-IS_DEMO = os.environ.get('CTRADER_IS_DEMO', 'True').lower() == 'true'
-ACCESS_TOKEN = os.environ.get('CTRADER_ACCESS_TOKEN')
+# Initialize cTrader client
+client = Client(HOST, PORT, TcpProtocol)
 
-# Global variables
-client = None
-is_authenticated = False
-is_account_authenticated = False
+def on_connected(client):
+    print("Connected to cTrader")
+    authenticate_application()
 
-# Symbol to ID mapping
-symbol_to_id = {
-    "XAUUSD": 41,  # Example mapping, you need to provide actual IDs
-    # Add more symbol mappings here
-}
-
-def setup_ctrader_client():
-    global client
-    host = EndPoints.PROTOBUF_DEMO_HOST if IS_DEMO else EndPoints.PROTOBUF_LIVE_HOST
-    client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
-    
-    client.setConnectedCallback(connected)
-    client.setDisconnectedCallback(disconnected)
-    client.setMessageReceivedCallback(on_message_received)
-    
-    client.startService()
-    
-    # Run the Twisted reactor in a separate thread
-    reactor_thread = Thread(target=reactor.run, args=(False,))
-    reactor_thread.daemon = True
-    reactor_thread.start()
-
-def connected(client):
-    logger.info("Connected to cTrader")
-    request = ProtoOAApplicationAuthReq()
-    request.clientId = CLIENT_ID
-    request.clientSecret = CLIENT_SECRET
-    client.send(request).addCallbacks(on_auth_response, on_error)
-
-def disconnected(client, reason):
-    logger.warning(f"Disconnected from cTrader: {reason}")
-    global is_authenticated
-    is_authenticated = False
-    global is_account_authenticated
-    is_account_authenticated = False
-
-def on_message_received(client, message):
-    logger.debug(f"Message received: {Protobuf.extract(message)}")
-
-def on_auth_response(message):
-    global is_authenticated
-    if message.payloadType == ProtoOAPayloadType.PROTO_OA_APPLICATION_AUTH_RES:
-        logger.info("Application authentication successful")
-        is_authenticated = True
-        # Send account authentication request
-        send_account_auth_request()
-    else:
-        logger.error(f"Unexpected response during application authentication: {message}")
-
-def send_account_auth_request():
-    request = ProtoOAAccountAuthReq()
-    request.ctidTraderAccountId = int(ACCOUNT_ID)
-    request.accessToken = ACCESS_TOKEN
-    client.send(request).addCallbacks(on_account_auth_response, on_error)
-
-def on_account_auth_response(message):
-    global is_account_authenticated
-    if message.payloadType == ProtoOAPayloadType.PROTO_OA_ACCOUNT_AUTH_RES:
-        logger.info("Account authentication successful")
-        is_account_authenticated = True
-    else:
-        logger.error(f"Unexpected response during account authentication: {message}")
+def on_disconnected(client, reason):
+    print(f"Disconnected from cTrader: {reason}")
 
 def on_error(failure):
-    logger.error(f"Error: {failure}")
+    print(f"Error: {failure}")
 
-def place_order(symbol, action, volume):
-    if not is_authenticated or not is_account_authenticated:
-        raise Exception("Not authenticated with cTrader or account not authenticated")
-    
-    request = ProtoOANewOrderReq()
-    try:
-        request.ctidTraderAccountId = int(ACCOUNT_ID)
-        request.symbolId = symbol_to_id[symbol]  # Get symbol ID from dictionary
-        request.orderType = ProtoOAOrderType.MARKET
-        request.tradeSide = ProtoOATradeSide.BUY if action.lower() == 'buy' else ProtoOATradeSide.SELL
-        request.volume = int(volume * 100)  # Convert to cents
-        request.comment = "Order from TradingView"
-    except KeyError as e:
-        logger.error(f"Symbol {symbol} not found in mapping: {str(e)}")
-        raise Exception(f"Error: Symbol {symbol} not found in mapping: {str(e)}")
-    except AttributeError as e:
-        logger.error(f"AttributeError in place_order: {str(e)}")
-        raise Exception(f"Error setting order attributes: {str(e)}")
-    
+def authenticate_application():
+    request = ProtoOAApplicationAuthReq(clientId=APP_CLIENT_ID, clientSecret=APP_CLIENT_SECRET)
     deferred = client.send(request)
-    return deferred
+    deferred.addCallback(on_app_auth_response)
+    deferred.addErrback(on_error)
 
-@app.route('/', methods=['GET'])
-def root():
-    return jsonify({
-        "message": "TradingView to cTrader Webhook Service",
-        "status": "running",
-        "authenticated": is_authenticated,
-        "account_authenticated": is_account_authenticated
-    }), 200
+def on_app_auth_response(response):
+    print("Application authenticated")
+    authenticate_account()
+
+def authenticate_account():
+    request = ProtoOAAccountAuthReq(ctidTraderAccountId=ACCOUNT_ID, accessToken=ACCESS_TOKEN)
+    deferred = client.send(request)
+    deferred.addCallback(on_account_auth_response)
+    deferred.addErrback(on_error)
+
+def on_account_auth_response(response):
+    print(f"Account {ACCOUNT_ID} authenticated")
+
+def send_order(symbol_id, order_type, trade_side, volume, price=None):
+    request = ProtoOANewOrderReq(
+        ctidTraderAccountId=ACCOUNT_ID,
+        symbolId=symbol_id,
+        orderType=order_type,
+        tradeSide=trade_side,
+        volume=volume
+    )
+    if price and order_type in [ProtoOAOrderType.LIMIT, ProtoOAOrderType.STOP]:
+        setattr(request, f"{order_type.name.lower()}Price", price)
+
+    deferred = client.send(request)
+    deferred.addCallback(on_order_response)
+    deferred.addErrback(on_error)
+
+def on_order_response(response):
+    print(f"Order placed: {response}")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if request.method == 'POST':
-        try:
-            # Try to parse JSON data regardless of Content-Type
-            try:
-                data = request.get_json(force=True)
-            except Exception as json_error:
-                # If JSON parsing fails, try to parse the data as a string
-                data_str = request.data.decode('utf-8')
-                # Assuming the data is in the format: symbol,action,quantity
-                parts = data_str.split(',')
-                if len(parts) != 3:
-                    raise ValueError("Invalid data format")
-                data = {
-                    'symbol': parts[0],
-                    'action': parts[1],
-                    'quantity': float(parts[2])
-                }
-            
-            logger.info(f"Received webhook data: {data}")
-            
-            symbol = data.get('symbol')
-            action = data.get('action')  # 'buy' or 'sell'
-            quantity = float(data.get('quantity', 0))
-            
-            if not all([symbol, action, quantity]):
-                logger.warning("Missing required parameters in webhook data")
-                return jsonify({"message": "Missing required parameters"}), 400
-            
-            order_deferred = place_order(symbol, action, quantity)
-            
-            def on_order_response(message):
-                if message.payloadType == ProtoOAPayloadType.PROTO_OA_EXECUTION_EVENT:
-                    logger.info(f"Order placed successfully: {message.orderId}")
-                    return jsonify({"message": "Order placed successfully", "order_id": message.orderId}), 200
-                elif message.payloadType == ProtoOAPayloadType.PROTO_OA_ERROR_RES:
-                    logger.error(f"Order placement error: {Protobuf.extract(message)}")
-                    return jsonify({"message": "Order placement error", "details": Protobuf.extract(message)}), 400
-                else:
-                    logger.warning(f"Unexpected response: {message}")
-                    return jsonify({"message": "Unexpected response", "response": str(message)}), 400
-            
-            order_deferred.addCallbacks(on_order_response, on_error)
-            
-            return jsonify({"message": "Order processing"}), 202
-        except Exception as e:
-            logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
-            return jsonify({"message": "Failed to process order", "error": str(e)}), 500
+    data = request.json
+    
+    symbol_id = int(data.get('symbol_id'))
+    order_type = ProtoOAOrderType.Value(data.get('order_type', 'MARKET'))
+    trade_side = ProtoOATradeSide.Value(data.get('trade_side'))
+    volume = int(float(data.get('volume')) * 100)  # Convert to cTrader volume
+    price = float(data.get('price', 0))
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "healthy", "authenticated": is_authenticated, "account_authenticated": is_account_authenticated}), 200
+    send_order(symbol_id, order_type, trade_side, volume, price)
 
-if __name__ == '__main__':
-    setup_ctrader_client()
-    port = int(os.environ.get('PORT', 10000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    return jsonify({"status": "success", "message": "Order received"}), 200
+
+if __name__ == "__main__":
+    client.setConnectedCallback(on_connected)
+    client.setDisconnectedCallback(on_disconnected)
+    client.startService()
+    reactor.callInThread(app.run, host='0.0.0.0', port=5000)
+    reactor.run()

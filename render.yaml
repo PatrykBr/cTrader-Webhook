@@ -5,11 +5,15 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python app.py
     envVars:
-      - key: CTRADER_CLIENT_ID
+      - key: CTRADER_HOST
         sync: false
-      - key: CTRADER_CLIENT_SECRET
+      - key: CTRADER_PORT
         sync: false
-      - key: CTRADER_ACCOUNT_ID
+      - key: APP_CLIENT_ID
         sync: false
-      - key: CTRADER_IS_DEMO
-        value: "True"
+      - key: APP_CLIENT_SECRET
+        sync: false
+      - key: ACCESS_TOKEN
+        sync: false
+      - key: ACCOUNT_ID
+        sync: false
