@@ -58,6 +58,12 @@ IS_DEMO = os.environ.get('CTRADER_IS_DEMO', 'True').lower() == 'true'
 client = None
 is_authenticated = False
 
+# Symbol to ID mapping
+symbol_to_id = {
+    "XAUUSD": 41,  # Example mapping, you need to provide actual IDs
+    # Add more symbol mappings here
+}
+
 def setup_ctrader_client():
     global client
     host = EndPoints.PROTOBUF_DEMO_HOST if IS_DEMO else EndPoints.PROTOBUF_LIVE_HOST
@@ -107,11 +113,14 @@ def place_order(symbol, action, volume):
     request = ProtoOANewOrderReq()
     try:
         request.ctidTraderAccountId = int(ACCOUNT_ID)
-        request.symbolId = int(symbol)  # Convert symbol to int if needed
+        request.symbolId = symbol_to_id[symbol]  # Get symbol ID from dictionary
         request.orderType = ProtoOAOrderType.MARKET
         request.tradeSide = ProtoOATradeSide.BUY if action.lower() == 'buy' else ProtoOATradeSide.SELL
         request.volume = int(volume * 100)  # Convert to cents
         request.comment = "Order from TradingView"
+    except KeyError as e:
+        logger.error(f"Symbol {symbol} not found in mapping: {str(e)}")
+        raise Exception(f"Error: Symbol {symbol} not found in mapping: {str(e)}")
     except AttributeError as e:
         logger.error(f"AttributeError in place_order: {str(e)}")
         raise Exception(f"Error setting order attributes: {str(e)}")
