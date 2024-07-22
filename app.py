@@ -60,7 +60,7 @@ is_authenticated = False
 
 # Symbol to ID mapping
 symbol_to_id = {
-    "XAUUSD": 41,  # Example mapping, you need to provide actual IDs
+    "XAUUSD": 1,  # Example mapping, you need to provide actual IDs
     # Add more symbol mappings here
 }
 
@@ -172,6 +172,9 @@ def webhook():
                 if message.payloadType == ProtoOAPayloadType.PROTO_OA_EXECUTION_EVENT:
                     logger.info(f"Order placed successfully: {message.orderId}")
                     return jsonify({"message": "Order placed successfully", "order_id": message.orderId}), 200
+                elif message.payloadType == ProtoOAPayloadType.PROTO_OA_ERROR_RES:
+                    logger.error(f"Order placement error: {message.errorCode} - {message.description}")
+                    return jsonify({"message": "Order placement error", "error_code": message.errorCode, "description": message.description}), 400
                 else:
                     logger.warning(f"Unexpected response: {message}")
                     return jsonify({"message": "Unexpected response", "response": str(message)}), 400
