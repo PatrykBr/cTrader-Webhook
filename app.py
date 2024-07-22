@@ -70,14 +70,25 @@ def on_order_response(response):
 def webhook():
     data = request.json
     
-    symbol_id = int(data.get('symbol_id'))
-    order_type = ProtoOAOrderType.Value(data.get('order_type', 'MARKET'))
-    trade_side = ProtoOATradeSide.Value(data.get('trade_side'))
-    volume = int(float(data.get('volume')) * 100)  # Convert to cTrader volume
-    price = float(data.get('price', 0))
-
-    send_order(symbol_id, order_type, trade_side, volume, price)
-
+    if not data:
+        return jsonify({"status": "error", "message": "No JSON data received"}), 400
+    
+    try:
+        symbol_id = int(data['symbol_id'])
+        order_type = ProtoOAOrderType.Value(data.get('order_type', 'MARKET'))
+        trade_side = ProtoOATradeSide.Value(data['trade_side'])
+        volume = int(float(data['volume']) * 100)  # Convert to cTrader volume
+        price = float(data.get('price', 0))
+    except KeyError as e:
+        return jsonify({"status": "error", "message": f"Missing required field: {str(e)}"}), 400
+    except ValueError as e:
+        return jsonify({"status": "error", "message": f"Invalid value: {str(e)}"}), 400
+    
+    try:
+        send_order(symbol_id, order_type, trade_side, volume, price)
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Error sending order: {str(e)}"}), 500
+    
     return jsonify({"status": "success", "message": "Order received"}), 200
 
 if __name__ == "__main__":
