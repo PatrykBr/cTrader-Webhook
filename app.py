@@ -4,7 +4,7 @@ from ctrader_open_api import Client, TcpProtocol
 from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq, ProtoOAAccountAuthReq, ProtoOANewOrderReq
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAOrderType, ProtoOATradeSide
 from twisted.internet import reactor
-
+import logging
 # Initialize Flask app
 app = Flask(__name__)
 
@@ -15,6 +15,10 @@ APP_CLIENT_ID = os.environ.get('APP_CLIENT_ID')
 APP_CLIENT_SECRET = os.environ.get('APP_CLIENT_SECRET')
 ACCESS_TOKEN = os.environ.get('ACCESS_TOKEN')
 ACCOUNT_ID = int(os.environ.get('ACCOUNT_ID'))
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Initialize cTrader client
 client = Client(HOST, PORT, TcpProtocol)
@@ -66,16 +70,13 @@ def send_order(symbol_id, order_type, trade_side, volume, price=None):
 def on_order_response(response):
     print(f"Order placed: {response}")
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({"status": "success", "message": "Welcome to the cTrader API webhook server"}), 200
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
-    print(f"Received data: {data}")  # Debug print
+    logger.debug(f"Received data: {data}")
     
     if not data:
+        logger.error("No JSON data received")
         return jsonify({"status": "error", "message": "No JSON data received"}), 400
     
     try:
@@ -85,15 +86,19 @@ def webhook():
         volume = int(float(data['volume']) * 100)  # Convert to cTrader volume
         price = float(data.get('price', 0))
     except KeyError as e:
+        logger.error(f"Missing required field: {str(e)}")
         return jsonify({"status": "error", "message": f"Missing required field: {str(e)}"}), 400
     except ValueError as e:
+        logger.error(f"Invalid value: {str(e)}")
         return jsonify({"status": "error", "message": f"Invalid value: {str(e)}"}), 400
     
     try:
         send_order(symbol_id, order_type, trade_side, volume, price)
     except Exception as e:
+        logger.error(f"Error sending order: {str(e)}")
         return jsonify({"status": "error", "message": f"Error sending order: {str(e)}"}), 500
     
+    logger.info("Order received successfully")
     return jsonify({"status": "success", "message": "Order received"}), 200
 
 if __name__ == "__main__":
