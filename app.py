@@ -1,12 +1,40 @@
+# app.py
+
 import os
 from flask import Flask, request, jsonify
 from ctrader_open_api import Client, Protobuf, TcpProtocol, Auth, EndPoints
-from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoOAPayloadType
+from ctrader_open_api.endpoints import EndPoints
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAApplicationAuthReq,
+    ProtoOAApplicationAuthRes,
     ProtoOANewOrderReq,
+    ProtoOAExecutionEvent,
+    ProtoOASubscribeSpotsReq,
+    ProtoOAUnsubscribeSpotsReq,
+    ProtoOAVersionReq,
+    ProtoOAGetAccountListByAccessTokenReq,
+    ProtoOAAccountLogoutReq,
+    ProtoOAAccountAuthReq,
+    ProtoOAAssetListReq,
+    ProtoOAAssetClassListReq,
+    ProtoOASymbolCategoryListReq,
+    ProtoOASymbolsListReq,
+    ProtoOATraderReq,
+    ProtoOAReconcileReq,
+    ProtoOAGetTrendbarsReq,
+    ProtoOAGetTickDataReq,
+    ProtoOAClosePositionReq,
+    ProtoOACancelOrderReq,
+    ProtoOADealOffsetListReq,
+    ProtoOAGetPositionUnrealizedPnLReq,
+    ProtoOAOrderDetailsReq,
+    ProtoOAOrderListByPositionIdReq,
+    ProtoOAErrorRes
+)
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import (
     ProtoOAOrderType,
-    ProtoOATradeSide
+    ProtoOATradeSide,
+    ProtoOAPayloadType
 )
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
@@ -30,11 +58,6 @@ IS_DEMO = os.environ.get('CTRADER_IS_DEMO', 'True').lower() == 'true'
 client = None
 is_authenticated = False
 
-# Define constants
-ORDER_TYPE_MARKET = ProtoOAOrderType.OA_MARKET
-TRADE_SIDE_BUY = ProtoOATradeSide.BUY
-TRADE_SIDE_SELL = ProtoOATradeSide.SELL
-
 def setup_ctrader_client():
     global client
     host = EndPoints.PROTOBUF_DEMO_HOST if IS_DEMO else EndPoints.PROTOBUF_LIVE_HOST
@@ -53,10 +76,10 @@ def setup_ctrader_client():
 
 def connected(client):
     logger.info("Connected to cTrader")
-    auth_request = ProtoOAApplicationAuthReq()
-    auth_request.clientId = CLIENT_ID
-    auth_request.clientSecret = CLIENT_SECRET
-    client.send(auth_request).addCallbacks(on_auth_response, on_error)
+    request = ProtoOAApplicationAuthReq()
+    request.clientId = CLIENT_ID
+    request.clientSecret = CLIENT_SECRET
+    client.send(request).addCallbacks(on_auth_response, on_error)
 
 def disconnected(client, reason):
     logger.warning(f"Disconnected from cTrader: {reason}")
@@ -84,9 +107,9 @@ def place_order(symbol, action, volume):
     request = ProtoOANewOrderReq()
     try:
         request.ctidTraderAccountId = int(ACCOUNT_ID)
-        request.symbolId = symbol
-        request.orderType = ORDER_TYPE_MARKET
-        request.tradeSide = TRADE_SIDE_BUY if action.lower() == 'buy' else TRADE_SIDE_SELL
+        request.symbolId = int(symbol)  # Convert symbol to int if needed
+        request.orderType = ProtoOAOrderType.MARKET
+        request.tradeSide = ProtoOATradeSide.BUY if action.lower() == 'buy' else ProtoOATradeSide.SELL
         request.volume = int(volume * 100)  # Convert to cents
         request.comment = "Order from TradingView"
     except AttributeError as e:
