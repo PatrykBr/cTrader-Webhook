@@ -9,12 +9,12 @@ from twisted.internet import reactor
 app = Flask(__name__)
 
 # cTrader configuration
-HOST = os.environ('CTRADER_HOST', 'demo.ctraderapi.com')
-PORT = int(os.environ('CTRADER_PORT', '5035'))
-APP_CLIENT_ID = os.environ('APP_CLIENT_ID')
-APP_CLIENT_SECRET = os.environ('APP_CLIENT_SECRET')
-ACCESS_TOKEN = os.environ('ACCESS_TOKEN')
-ACCOUNT_ID = int(os.environ('ACCOUNT_ID'))
+HOST = os.environ.get('CTRADER_HOST', 'demo.ctraderapi.com')
+PORT = int(os.environ.get('CTRADER_PORT', '5035'))
+APP_CLIENT_ID = os.environ.get('APP_CLIENT_ID')
+APP_CLIENT_SECRET = os.environ.get('APP_CLIENT_SECRET')
+ACCESS_TOKEN = os.environ.get('ACCESS_TOKEN')
+ACCOUNT_ID = int(os.environ.get('ACCOUNT_ID'))
 
 # Initialize cTrader client
 client = Client(HOST, PORT, TcpProtocol)
