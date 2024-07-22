@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: tradingview-ctrader-webhook
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: CTRADER_CLIENT_ID
+        sync: false
+      - key: CTRADER_CLIENT_SECRET
+        sync: false
+      - key: CTRADER_ACCOUNT_ID
+        sync: false
+      - key: CTRADER_IS_DEMO
+        value: "True"

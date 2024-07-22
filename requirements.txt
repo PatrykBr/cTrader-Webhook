@@ -1,0 +1,3 @@
+flask
+ctrader-open-api
+twisted
