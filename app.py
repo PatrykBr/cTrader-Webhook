@@ -102,12 +102,12 @@ def on_message_received(client, message):
 def on_auth_response(message):
     global is_authenticated
     if message.payloadType == ProtoOAPayloadType.PROTO_OA_APPLICATION_AUTH_RES:
-        logger.info("Authentication successful")
+        logger.info("Application authentication successful")
         is_authenticated = True
         # Send account authentication request
         send_account_auth_request()
     else:
-        logger.error(f"Unexpected response during authentication: {message}")
+        logger.error(f"Unexpected response during application authentication: {message}")
 
 def send_account_auth_request():
     request = ProtoOAAccountAuthReq()
