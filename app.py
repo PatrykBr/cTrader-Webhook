@@ -78,25 +78,35 @@ def sendProtoOAAccountAuthReq(clientMsgId=None):
     deferred = client.send(request, clientMsgId=clientMsgId)
     deferred.addErrback(onError)
 
-def sendNewMarketOrder(symbolId, tradeSide, volume, clientMsgId=None):
+def sendNewMarketOrder(symbol, action, quantity, clientMsgId=None):
     request = ProtoOANewOrderReq()
     request.ctidTraderAccountId = currentAccountId
-    request.symbolId = int(symbolId)
+    # Assuming the symbolId mapping is available and action is 'buy' or 'sell'
+    symbolId = get_symbol_id(symbol)  # Implement this function to map symbols to symbolId
+    request.symbolId = symbolId
     request.orderType = ProtoOAOrderType.MARKET
-    request.tradeSide = ProtoOATradeSide.Value(tradeSide.upper())
-    request.volume = int(volume) * 100
+    request.tradeSide = ProtoOATradeSide.BUY if action.lower() == "buy" else ProtoOATradeSide.SELL
+    request.volume = int(float(quantity) * 100000)  # Adjust based on the lot size of the asset
     deferred = client.send(request, clientMsgId=clientMsgId)
     deferred.addErrback(onError)
+
+def get_symbol_id(symbol):
+    # Implement this function to map symbols to symbolId
+    symbol_map = {
+        "BTCUSD": 1,  # Example mapping
+        # Add more symbol mappings here
+    }
+    return symbol_map.get(symbol, 0)  # Return 0 or appropriate default if symbol not found
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
         data = request.json
         logging.debug("Webhook received data: %s", data)
-        symbolId = data['symbolId']
-        tradeSide = data['tradeSide']
-        volume = data['volume']
-        sendNewMarketOrder(symbolId, tradeSide, volume)
+        symbol = data['symbol']
+        action = data['action']
+        quantity = data['quantity']
+        sendNewMarketOrder(symbol, action, quantity)
         return jsonify({"status": "order placed"}), 200
     except KeyError as e:
         logging.error("Missing key in JSON data: %s", e)
