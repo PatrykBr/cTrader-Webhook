@@ -1,0 +1,21 @@
+services:
+  - name: ctrader-webhook
+    type: web
+    env: python
+    buildCommand: ""
+    startCommand: python webhook_listener.py
+    envVars:
+      - key: HOST_TYPE
+        value: "demo"
+      - key: APP_CLIENT_ID
+        value: "your_client_id"
+      - key: APP_CLIENT_SECRET
+        value: "your_client_secret"
+      - key: ACCESS_TOKEN
+        value: "your_access_token"
+      - key: ACCOUNT_ID
+        value: "your_account_id"
+      - key: WEBHOOK_USER
+        value: "your_webhook_user"
+      - key: WEBHOOK_PASS
+        value: "your_webhook_pass"

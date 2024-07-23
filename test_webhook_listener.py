@@ -15,6 +15,8 @@ class WebhookListenerTestCase(unittest.TestCase):
     def setUp(self):
         self.app = app.test_client()
         self.app.testing = True
+        os.environ['WEBHOOK_USER'] = 'test_user'
+        os.environ['WEBHOOK_PASS'] = 'test_pass'
 
     def test_index(self):
         result = self.app.get('/')
@@ -23,10 +25,6 @@ class WebhookListenerTestCase(unittest.TestCase):
 
     @patch('webhook_listener.sendProtoOANewOrderReq')
     def test_webhook(self, mock_send_order):
-        # Set environment variables for testing
-        os.environ['WEBHOOK_USER'] = 'test_user'
-        os.environ['WEBHOOK_PASS'] = 'test_pass'
-        
         headers = {
             'Content-Type': 'application/json',
             'Authorization': 'Basic ' + base64.b64encode(b'test_user:test_pass').decode('utf-8')
