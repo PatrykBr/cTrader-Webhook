@@ -1,6 +1,7 @@
 import os
 import logging
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
+from functools import wraps
 from ctrader_open_api import Client, Protobuf, TcpProtocol, Auth, EndPoints
 from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq, ProtoOAApplicationAuthRes, ProtoOAAccountAuthReq, ProtoOAAccountAuthRes, ProtoOANewOrderReq
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAOrderType, ProtoOATradeSide
@@ -19,6 +20,8 @@ APP_CLIENT_ID = os.getenv("APP_CLIENT_ID")
 APP_CLIENT_SECRET = os.getenv("APP_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 ACCOUNT_ID = int(os.getenv("ACCOUNT_ID"))
+WEBHOOK_USER = os.getenv("WEBHOOK_USER")
+WEBHOOK_PASS = os.getenv("WEBHOOK_PASS")
 
 if not all([HOST_TYPE, APP_CLIENT_ID, APP_CLIENT_SECRET, ACCESS_TOKEN, ACCOUNT_ID]):
     raise ValueError("All required environment variables are not set.")
@@ -67,7 +70,30 @@ def sendProtoOANewOrderReq(symbolId, orderType, tradeSide, volume, clientMsgId=N
     except Exception as e:
         logger.error(f"Error while sending new order request: {e}")
 
+def check_auth(username, password):
+    return username == WEBHOOK_USER and password == WEBHOOK_PASS
+
+def authenticate():
+    return Response(
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route('/')
+def index():
+    return "Webhook listener for TradingView to cTrader is running."
+
 @app.route('/webhook', methods=['POST'])
+@requires_auth
 def webhook():
     data = request.json
     if not data:
