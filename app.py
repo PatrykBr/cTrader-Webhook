@@ -7,10 +7,6 @@ from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 from twisted.internet import reactor
 import logging
 import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,11 +21,11 @@ current_account_id = None
 def initialize_client():
     global client, current_account_id
     
-    host_type = os.getenv('HOST_TYPE', 'demo').lower()
-    app_client_id = os.getenv('APP_CLIENT_ID')
-    app_client_secret = os.getenv('APP_CLIENT_SECRET')
-    access_token = os.getenv('ACCESS_TOKEN')
-    current_account_id = int(os.getenv('ACCOUNT_ID'))
+    host_type = os.environ.get('HOST_TYPE', 'demo').lower()
+    app_client_id = os.environ.get('APP_CLIENT_ID')
+    app_client_secret = os.environ.get('APP_CLIENT_SECRET')
+    access_token = os.environ.get('ACCESS_TOKEN')
+    current_account_id = int(os.environ.get('ACCOUNT_ID'))
 
     if not all([host_type, app_client_id, app_client_secret, access_token, current_account_id]):
         raise ValueError("Missing required environment variables")
@@ -45,7 +41,7 @@ def initialize_client():
 
 def on_connected(client):
     logger.info("Connected")
-    request = ProtoOAApplicationAuthReq(clientId=os.getenv('APP_CLIENT_ID'), clientSecret=os.getenv('APP_CLIENT_SECRET'))
+    request = ProtoOAApplicationAuthReq(clientId=os.environ.get('APP_CLIENT_ID'), clientSecret=os.environ.get('APP_CLIENT_SECRET'))
     deferred = client.send(request)
     deferred.addErrback(on_error)
 
@@ -66,7 +62,7 @@ def on_error(failure):
     logger.error(f"Message Error: {failure}")
 
 def send_account_auth_req():
-    request = ProtoOAAccountAuthReq(ctidTraderAccountId=current_account_id, accessToken=os.getenv('ACCESS_TOKEN'))
+    request = ProtoOAAccountAuthReq(ctidTraderAccountId=current_account_id, accessToken=os.environ.get('ACCESS_TOKEN'))
     deferred = client.send(request)
     deferred.addErrback(on_error)
 
