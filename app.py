@@ -60,11 +60,10 @@ def onMessageReceived(client, message):  # Callback for receiving all messages
         return
     elif message.payloadType == ProtoOAApplicationAuthRes().payloadType:
         logging.info("API Application authorized")
-        if currentAccountId is not None:
-            sendProtoOAAccountAuthReq()
     elif message.payloadType == ProtoOAAccountAuthRes().payloadType:
         protoOAAccountAuthRes = Protobuf.extract(message)
-        logging.info(f"Account {protoOAAccountAuthRes.ctidTraderAccountId} has been authorized")
+        currentAccountId = protoOAAccountAuthRes.ctidTraderAccountId
+        logging.info(f"Account {currentAccountId} has been authorized")
     else:
         logging.info("Message received: %s", Protobuf.extract(message))
 
@@ -79,9 +78,10 @@ def sendProtoOAAccountAuthReq(clientMsgId=None):
     deferred.addErrback(onError)
 
 def sendNewMarketOrder(symbol, action, quantity, clientMsgId=None):
+    if currentAccountId is None:
+        raise ValueError("Account ID is not set. Please set the account ID first.")
     request = ProtoOANewOrderReq()
     request.ctidTraderAccountId = currentAccountId
-    # Assuming the symbolId mapping is available and action is 'buy' or 'sell'
     symbolId = get_symbol_id(symbol)  # Implement this function to map symbols to symbolId
     request.symbolId = symbolId
     request.orderType = ProtoOAOrderType.MARKET
@@ -113,6 +113,21 @@ def webhook():
         return jsonify({"error": f"Missing key: {str(e)}"}), 400
     except Exception as e:
         logging.error("Error processing webhook: %s", e)
+        return jsonify({"error": str(e)}), 400
+
+@app.route('/set_account', methods=['POST'])
+def set_account():
+    global currentAccountId
+    try:
+        data = request.json
+        currentAccountId = data['accountId']
+        sendProtoOAAccountAuthReq()
+        return jsonify({"status": f"Account {currentAccountId} set and authenticated"}), 200
+    except KeyError as e:
+        logging.error("Missing key in JSON data: %s", e)
+        return jsonify({"error": f"Missing key: {str(e)}"}), 400
+    except Exception as e:
+        logging.error("Error setting account: %s", e)
         return jsonify({"error": str(e)}), 400
 
 def authenticate_and_start():
