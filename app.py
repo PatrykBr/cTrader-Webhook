@@ -1,154 +1,100 @@
-#!/usr/bin/env python
-
-from ctrader_open_api import Client, Protobuf, TcpProtocol, Auth, EndPoints
-from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
-from ctrader_open_api.messages.OpenApiMessages_pb2 import *
-from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
-from twisted.internet import reactor
-from flask import Flask, request, jsonify
-import webbrowser
-import datetime
-import calendar
-import threading
-import logging
 import os
+import logging
+from flask import Flask, request, jsonify
+from ctrader_open_api import Client, Protobuf, TcpProtocol, Auth, EndPoints
+from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq, ProtoOAApplicationAuthRes, ProtoOAAccountAuthReq, ProtoOAAccountAuthRes, ProtoOANewOrderReq
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAOrderType, ProtoOATradeSide
+from twisted.internet import reactor
+import webbrowser
 
 app = Flask(__name__)
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-currentAccountId = None
-hostType = os.environ.get("HOST_TYPE", "demo").lower()
-appClientId = os.environ.get("APP_CLIENT_ID")
-appClientSecret = os.environ.get("APP_CLIENT_SECRET")
-accessToken = os.environ.get("ACCESS_TOKEN")
-appRedirectUri = os.environ.get("APP_REDIRECT_URI")
+# Environment variables
+HOST_TYPE = os.getenv("HOST_TYPE")
+APP_CLIENT_ID = os.getenv("APP_CLIENT_ID")
+APP_CLIENT_SECRET = os.getenv("APP_CLIENT_SECRET")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+ACCOUNT_ID = int(os.getenv("ACCOUNT_ID"))
 
-def initialize_client():
-    global client
-    client = Client(
-        EndPoints.PROTOBUF_LIVE_HOST if hostType == "live" else EndPoints.PROTOBUF_DEMO_HOST,
-        EndPoints.PROTOBUF_PORT,
-        TcpProtocol
-    )
+if not all([HOST_TYPE, APP_CLIENT_ID, APP_CLIENT_SECRET, ACCESS_TOKEN, ACCOUNT_ID]):
+    raise ValueError("All required environment variables are not set.")
+
+client = Client(EndPoints.PROTOBUF_LIVE_HOST if HOST_TYPE == "live" else EndPoints.PROTOBUF_DEMO_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
+
+def connected(client):
+    logger.info("\nConnected")
+    request = ProtoOAApplicationAuthReq()
+    request.clientId = APP_CLIENT_ID
+    request.clientSecret = APP_CLIENT_SECRET
+    deferred = client.send(request)
+    deferred.addErrback(onError)
+
+def disconnected(client, reason):
+    logger.info(f"\nDisconnected: {reason}")
+
+def onMessageReceived(client, message):
+    if message.payloadType == ProtoOAApplicationAuthRes().payloadType:
+        logger.info("API Application authorized\n")
+        sendProtoOAAccountAuthReq()
+    elif message.payloadType == ProtoOAAccountAuthRes().payloadType:
+        protoOAAccountAuthRes = Protobuf.extract(message)
+        logger.info(f"Account {protoOAAccountAuthRes.ctidTraderAccountId} has been authorized\n")
+
+def onError(failure):
+    logger.error(f"Message Error: {failure}")
+
+def sendProtoOAAccountAuthReq(clientMsgId=None):
+    request = ProtoOAAccountAuthReq()
+    request.ctidTraderAccountId = ACCOUNT_ID
+    request.accessToken = ACCESS_TOKEN
+    deferred = client.send(request, clientMsgId=clientMsgId)
+    deferred.addErrback(onError)
+
+def sendProtoOANewOrderReq(symbolId, orderType, tradeSide, volume, clientMsgId=None):
+    try:
+        request = ProtoOANewOrderReq()
+        request.ctidTraderAccountId = ACCOUNT_ID
+        request.symbolId = int(symbolId)
+        request.orderType = ProtoOAOrderType.Value(orderType.upper())
+        request.tradeSide = ProtoOATradeSide.Value(tradeSide.upper())
+        request.volume = int(volume) * 100
+        deferred = client.send(request, clientMsgId=clientMsgId)
+        deferred.addErrback(onError)
+    except Exception as e:
+        logger.error(f"Error while sending new order request: {e}")
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    if not data:
+        return jsonify({"error": "Invalid data"}), 400
+
+    try:
+        symbolId = data["symbolId"]
+        tradeSide = data["tradeSide"].upper()
+        volume = data["volume"]
+
+        if tradeSide not in ["BUY", "SELL"]:
+            return jsonify({"error": "Trade side must be 'BUY' or 'SELL'"}), 400
+
+        sendProtoOANewOrderReq(symbolId, "MARKET", tradeSide, volume)
+        return jsonify({"status": "Order placed"}), 200
+
+    except KeyError as ke:
+        logger.error(f"Missing key in JSON data: {ke}")
+        return jsonify({"error": "Invalid data format"}), 400
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+if __name__ == '__main__':
     client.setConnectedCallback(connected)
     client.setDisconnectedCallback(disconnected)
     client.setMessageReceivedCallback(onMessageReceived)
     client.startService()
-    reactor.run(installSignalHandlers=0)
-
-def start_client_in_thread():
-    client_thread = threading.Thread(target=initialize_client)
-    client_thread.daemon = True
-    client_thread.start()
-
-def connected(client):  # Callback for client connection
-    logging.info("Connected")
-    request = ProtoOAApplicationAuthReq()
-    request.clientId = appClientId
-    request.clientSecret = appClientSecret
-    deferred = client.send(request)
-    deferred.addErrback(onError)
-
-def disconnected(client, reason):  # Callback for client disconnection
-    logging.info("Disconnected: %s", reason)
-
-def onMessageReceived(client, message):  # Callback for receiving all messages
-    global currentAccountId
-    if message.payloadType in [ProtoOASubscribeSpotsRes().payloadType, ProtoOAAccountLogoutRes().payloadType, ProtoHeartbeatEvent().payloadType]:
-        return
-    elif message.payloadType == ProtoOAApplicationAuthRes().payloadType:
-        logging.info("API Application authorized")
-    elif message.payloadType == ProtoOAAccountAuthRes().payloadType:
-        protoOAAccountAuthRes = Protobuf.extract(message)
-        currentAccountId = protoOAAccountAuthRes.ctidTraderAccountId
-        logging.info(f"Account {currentAccountId} has been authorized")
-    else:
-        logging.info("Message received: %s", Protobuf.extract(message))
-
-def onError(failure):  # Callback for errors
-    logging.error("Message Error: %s", failure)
-
-def sendProtoOAAccountAuthReq(clientMsgId=None):
-    request = ProtoOAAccountAuthReq()
-    request.ctidTraderAccountId = currentAccountId
-    request.accessToken = accessToken
-    deferred = client.send(request, clientMsgId=clientMsgId)
-    deferred.addErrback(onError)
-
-def sendNewMarketOrder(symbol, action, quantity, clientMsgId=None):
-    if currentAccountId is None:
-        raise ValueError("Account ID is not set. Please set the account ID first.")
-    request = ProtoOANewOrderReq()
-    request.ctidTraderAccountId = currentAccountId
-    symbolId = get_symbol_id(symbol)  # Implement this function to map symbols to symbolId
-    request.symbolId = symbolId
-    request.orderType = ProtoOAOrderType.MARKET
-    request.tradeSide = ProtoOATradeSide.BUY if action.lower() == "buy" else ProtoOATradeSide.SELL
-    request.volume = int(float(quantity) * 100000)  # Adjust based on the lot size of the asset
-    deferred = client.send(request, clientMsgId=clientMsgId)
-    deferred.addErrback(onError)
-
-def get_symbol_id(symbol):
-    # Implement this function to map symbols to symbolId
-    symbol_map = {
-        "BTCUSD": 1,  # Example mapping
-        # Add more symbol mappings here
-    }
-    return symbol_map.get(symbol, 0)  # Return 0 or appropriate default if symbol not found
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        data = request.json
-        logging.debug("Webhook received data: %s", data)
-        symbol = data['symbol']
-        action = data['action']
-        quantity = data['quantity']
-        sendNewMarketOrder(symbol, action, quantity)
-        return jsonify({"status": "order placed"}), 200
-    except KeyError as e:
-        logging.error("Missing key in JSON data: %s", e)
-        return jsonify({"error": f"Missing key: {str(e)}"}), 400
-    except Exception as e:
-        logging.error("Error processing webhook: %s", e)
-        return jsonify({"error": str(e)}), 400
-
-@app.route('/set_account', methods=['POST'])
-def set_account():
-    global currentAccountId
-    try:
-        data = request.json
-        currentAccountId = data['accountId']
-        sendProtoOAAccountAuthReq()
-        return jsonify({"status": f"Account {currentAccountId} set and authenticated"}), 200
-    except KeyError as e:
-        logging.error("Missing key in JSON data: %s", e)
-        return jsonify({"error": f"Missing key: {str(e)}"}), 400
-    except Exception as e:
-        logging.error("Error setting account: %s", e)
-        return jsonify({"error": str(e)}), 400
-
-def authenticate_and_start():
-    global accessToken
-    if not accessToken:
-        if not appRedirectUri:
-            raise ValueError("APP_REDIRECT_URI must be set in the environment if no access token is available.")
-        auth = Auth(appClientId, appClientSecret, appRedirectUri)
-        authUri = auth.getAuthUri()
-        print(f"Please continue the authentication on your browser:\n {authUri}")
-        webbrowser.open_new(authUri)
-        authCode = input("Auth Code: ")
-        token = auth.getToken(authCode)
-        if "accessToken" not in token:
-            raise KeyError(token)
-        accessToken = token["accessToken"]
-    start_client_in_thread()
-
-def main():
-    authenticate_and_start()
-    app.run(host="0.0.0.0", port=5000, debug=True)
-
-if __name__ == "__main__":
-    main()
+    reactor.callInThread(app.run, host='0.0.0.0', port=5000)
+    reactor.run()
