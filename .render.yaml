@@ -6,16 +6,16 @@ services:
     startCommand: python webhook_listener.py
     envVars:
       - key: HOST_TYPE
-        value: "demo"
+        value: "demo" 
       - key: APP_CLIENT_ID
-        value: "your_client_id"
+        value: ""
       - key: APP_CLIENT_SECRET
-        value: "your_client_secret"
+        value: ""
       - key: ACCESS_TOKEN
-        value: "your_access_token"
+        value: ""
       - key: ACCOUNT_ID
-        value: "your_account_id"
+        value: ""
       - key: WEBHOOK_USER
-        value: "your_webhook_user"
+        value: ""
       - key: WEBHOOK_PASS
-        value: "your_webhook_pass"
+        value: ""
