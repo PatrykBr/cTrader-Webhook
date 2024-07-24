@@ -13,8 +13,9 @@ from twisted.web.wsgi import WSGIResource
 from twisted.web.server import Site
 from twisted.internet import endpoints
 import json
-import time
 import argparse
+import time
+from twisted.internet import task
 
 app = Flask(__name__)
 
@@ -53,16 +54,28 @@ def disconnected(client, reason):
     reconnect()
 
 def reconnect():
+    global is_connected
     max_retries = 5
-    for i in range(max_retries):
-        try:
-            logger.info(f"Attempting to reconnect (attempt {i+1}/{max_retries})")
-            client.startService()
+    retry_delay = 5  # Start with a 5-second delay
+
+    def attempt_reconnect():
+        nonlocal max_retries, retry_delay
+        if is_connected:
             return
+
+        try:
+            logger.info(f"Attempting to reconnect (attempts left: {max_retries})")
+            client.startService()
         except Exception as e:
-            logger.error(f"Reconnection attempt {i+1} failed: {e}")
-            time.sleep(5 * (i + 1))  # Exponential backoff
-    logger.critical("Failed to reconnect after multiple attempts")
+            logger.error(f"Reconnection attempt failed: {e}")
+            max_retries -= 1
+            if max_retries > 0:
+                retry_delay *= 2  # Exponential backoff
+                reactor.callLater(retry_delay, attempt_reconnect)
+            else:
+                logger.critical("Failed to reconnect after multiple attempts")
+
+    attempt_reconnect()
 
 def onMessageReceived(client, message):
     if message.payloadType == ProtoOAApplicationAuthRes().payloadType:
@@ -188,7 +201,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the TradingView to cTrader webhook server')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
     parser.add_argument('--test', action='store_true', help='Run in test mode (no cTrader connection)')
-    parser.add_argument('--port', type=int, default=5000, help='Port to run the server on')
+    parser.add_argument('--port', type=int, default=int(os.environ.get("PORT", 5000)), help='Port to run the server on')
     args = parser.parse_args()
 
     if args.test:
@@ -198,3 +211,7 @@ if __name__ == '__main__':
         run_server(args.port, args.debug)
         if not args.debug:
             run_twisted()
+
+    # Add a periodic check to ensure connection
+    l = task.LoopingCall(lambda: client.startService() if not is_connected else None)
+    l.start(60.0)  # Check every 60 seconds
