@@ -16,6 +16,15 @@ import json
 import argparse
 import time
 from twisted.internet import task
+import os
+import logging
+from flask import Flask
+from twisted.internet import reactor
+from twisted.web.wsgi import WSGIResource
+from twisted.web.server import Site
+from twisted.internet import endpoints
+import argparse
+import socket
 
 app = Flask(__name__)
 
@@ -29,8 +38,7 @@ APP_CLIENT_ID = os.getenv("APP_CLIENT_ID", "test_client_id")
 APP_CLIENT_SECRET = os.getenv("APP_CLIENT_SECRET", "test_client_secret")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "test_access_token")
 ACCOUNT_ID = int(os.getenv("ACCOUNT_ID", "0"))
-WEBHOOK_USER = os.getenv("WEBHOOK_USER", "test_user")
-WEBHOOK_PASS = os.getenv("WEBHOOK_PASS", "test_pass")
+AUTH_TOKEN = os.getenv("AUTH_TOKEN", "your_secure_token_here")
 
 # Global variable to track connection status
 is_connected = False
@@ -114,20 +122,12 @@ def sendProtoOANewOrderReq(symbolId, orderType, tradeSide, volume, clientMsgId=N
 def onOrderPlaced(response):
     logger.info(f"Order placed successfully: {response}")
 
-def check_auth(username, password):
-    return username == WEBHOOK_USER and password == WEBHOOK_PASS
-
-def authenticate():
-    return Response(
-        'Authentication required', 401,
-        {'WWW-Authenticate': 'Basic realm="Login Required"'})
-
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
+        token = request.args.get('token')
+        if not token or token != AUTH_TOKEN:
+            return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -180,15 +180,36 @@ def webhook():
         logger.error(f"Unexpected error in webhook handler: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
+def find_free_port(start_port, max_port=65535):
+    for port in range(start_port, max_port + 1):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(('', port))
+            s.close()
+            return port
+        except OSError:
+            continue
+    return None
+
 def run_server(port, debug=False):
     if debug:
         app.run(host='0.0.0.0', port=port, debug=True)
     else:
+        free_port = find_free_port(port)
+        if free_port is None:
+            logger.error(f"Could not find a free port. Exiting.")
+            return
+
         resource = WSGIResource(reactor, reactor.getThreadPool(), app)
         site = Site(resource)
-        endpoint = endpoints.TCP4ServerEndpoint(reactor, port, interface='0.0.0.0')
-        endpoint.listen(site)
-        logger.info(f"Server running on port {port}")
+        endpoint = endpoints.TCP4ServerEndpoint(reactor, free_port, interface='0.0.0.0')
+        
+        def on_listening(port):
+            logger.info(f"Server running on port {port.getHost().port}")
+
+        d = endpoint.listen(site)
+        d.addCallback(on_listening)
+        d.addErrback(lambda failure: logger.error(f"Failed to start server: {failure.getErrorMessage()}"))
 
 def run_twisted():
     client.setConnectedCallback(connected)
