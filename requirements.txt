@@ -1,3 +1,4 @@
 flask
 twisted
 ctrader_open_api
+service_identity
