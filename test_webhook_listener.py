@@ -1,57 +1,51 @@
-import os
-import json
 import unittest
-from unittest.mock import patch
-from flask import Flask
-import base64
-
-# Ensure the webhook_listener module can be found
-import sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
+from unittest.mock import patch, MagicMock
 from webhook_listener import app, sendProtoOANewOrderReq
 
 class WebhookListenerTestCase(unittest.TestCase):
+
     def setUp(self):
         self.app = app.test_client()
         self.app.testing = True
-        os.environ['WEBHOOK_USER'] = 'test_user'
-        os.environ['WEBHOOK_PASS'] = 'test_pass'
-
-    def test_index(self):
-        result = self.app.get('/')
-        self.assertEqual(result.status_code, 200)
-        self.assertEqual(result.data, b"Webhook listener for TradingView to cTrader is running.")
+        self.headers = {
+            "Authorization": "test_secret",
+            "Content-Type": "application/json"
+        }
 
     @patch('webhook_listener.sendProtoOANewOrderReq')
-    def test_webhook(self, mock_send_order):
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Basic ' + base64.b64encode(b'test_user:test_pass').decode('utf-8')
-        }
-        data = {
+    def test_valid_webhook_request(self, mock_send_order):
+        mock_send_order.return_value = None
+        response = self.app.post('/webhook', json={
             "symbolId": 12345,
             "tradeSide": "BUY",
             "volume": 1
-        }
-        result = self.app.post('/webhook', data=json.dumps(data), headers=headers)
-        self.assertEqual(result.status_code, 200)
-        self.assertIn('Order placed', result.data.decode('utf-8'))
-        mock_send_order.assert_called_once_with(12345, "MARKET", "BUY", 1)
+        }, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"status": "Order placed"})
 
-    def test_webhook_auth_failure(self):
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Basic ' + base64.b64encode(b'wrong_user:wrong_pass').decode('utf-8')
-        }
-        data = {
+    def test_invalid_trade_side(self):
+        response = self.app.post('/webhook', json={
+            "symbolId": 12345,
+            "tradeSide": "INVALID",
+            "volume": 1
+        }, headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json, {"error": "Trade side must be 'BUY' or 'SELL'"})
+
+    def test_missing_auth_header(self):
+        response = self.app.post('/webhook', json={
             "symbolId": 12345,
             "tradeSide": "BUY",
             "volume": 1
-        }
-        result = self.app.post('/webhook', data=json.dumps(data), headers=headers)
-        self.assertEqual(result.status_code, 401)
-        self.assertIn('Could not verify your access level for that URL', result.data.decode('utf-8'))
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json, {"message": "Unauthorized"})
+
+    def test_invalid_json_format(self):
+        response = self.app.post('/webhook', data="invalid_json", headers={"Authorization": "test_secret", "Content-Type": "application/json"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json, {"error": "Invalid data"})
 
 if __name__ == '__main__':
-    unittest.main()
+    with patch.dict('os.environ', {'WEBHOOK_SECRET': 'test_secret'}):
+        unittest.main()

@@ -1,6 +1,6 @@
 import os
 import logging
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, abort
 from functools import wraps
 from ctrader_open_api import Client, Protobuf, TcpProtocol, Auth, EndPoints
 from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq, ProtoOAApplicationAuthRes, ProtoOAAccountAuthReq, ProtoOAAccountAuthRes, ProtoOANewOrderReq
@@ -20,10 +20,9 @@ APP_CLIENT_ID = os.getenv("APP_CLIENT_ID")
 APP_CLIENT_SECRET = os.getenv("APP_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 ACCOUNT_ID = int(os.getenv("ACCOUNT_ID"))
-WEBHOOK_USER = os.getenv("WEBHOOK_USER")
-WEBHOOK_PASS = os.getenv("WEBHOOK_PASS")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
-if not all([HOST_TYPE, APP_CLIENT_ID, APP_CLIENT_SECRET, ACCESS_TOKEN, ACCOUNT_ID]):
+if not all([HOST_TYPE, APP_CLIENT_ID, APP_CLIENT_SECRET, ACCESS_TOKEN, ACCOUNT_ID, WEBHOOK_SECRET]):
     raise ValueError("All required environment variables are not set.")
 
 client = Client(EndPoints.PROTOBUF_LIVE_HOST if HOST_TYPE == "live" else EndPoints.PROTOBUF_DEMO_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
@@ -70,32 +69,24 @@ def sendProtoOANewOrderReq(symbolId, orderType, tradeSide, volume, clientMsgId=N
     except Exception as e:
         logger.error(f"Error while sending new order request: {e}")
 
-def check_auth(username, password):
-    return username == WEBHOOK_USER and password == WEBHOOK_PASS
-
-def authenticate():
-    return Response(
-        'Could not verify your access level for that URL.\n'
-        'You have to login with proper credentials', 401,
-        {'WWW-Authenticate': 'Basic realm="Login Required"'})
-
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
+        auth = request.headers.get("Authorization")
+        if not auth or auth != WEBHOOK_SECRET:
+            return jsonify({"message": "Unauthorized"}), 403
         return f(*args, **kwargs)
     return decorated
 
-@app.route('/')
-def index():
-    return "Webhook listener for TradingView to cTrader is running."
+@app.before_request
+def before_request_func():
+    if request.method == "POST" and request.is_json is False:
+        return jsonify({"error": "Invalid data"}), 400
 
 @app.route('/webhook', methods=['POST'])
 @requires_auth
 def webhook():
-    data = request.json
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Invalid data"}), 400
 
@@ -116,6 +107,10 @@ def webhook():
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         return jsonify({"error": "Internal server error"}), 500
+
+@app.errorhandler(404)
+def page_not_found(e):
+    return jsonify({"error": "Endpoint not found"}), 404
 
 if __name__ == '__main__':
     client.setConnectedCallback(connected)
