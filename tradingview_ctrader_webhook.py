@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import time
 from flask import Flask, request, jsonify
 from functools import wraps
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
@@ -9,11 +10,13 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAApplicationAuthReq, ProtoOAAccountAuthReq, ProtoOAReconcileReq, 
     ProtoOANewOrderReq, ProtoOAClosePositionReq)
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOAPositionStatus, ProtoOATradeSide, ProtoOAOrderType
-from twisted.internet import reactor, task
+from twisted.internet import reactor, task, defer
 from twisted.web.wsgi import WSGIResource
 from twisted.web.server import Site
 from twisted.internet import endpoints
 import argparse
+from queue import Queue
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,12 +30,21 @@ class Config:
     ACCOUNT_ID = int(os.getenv("ACCOUNT_ID", "0"))
     AUTH_TOKEN = os.getenv("AUTH_TOKEN", "your_secure_token_here")
     PORT = int(os.environ.get("PORT", 5000))
+    OPERATION_TIMEOUT = 30  # 30 seconds timeout for operations
 
 app = Flask(__name__)
 
 class CTradingAPI:
     def __init__(self):
         self.is_connected = False
+        self.client = None
+        self.order_queue = Queue()
+        self.order_processing_thread = threading.Thread(target=self.process_order_queue)
+        self.order_processing_thread.start()
+        self.last_activity_time = 0
+        self.keep_alive_interval = 30  # seconds
+
+    def setup_client(self):
         self.client = Client(
             EndPoints.PROTOBUF_LIVE_HOST if Config.HOST_TYPE == "live" else EndPoints.PROTOBUF_DEMO_HOST,
             EndPoints.PROTOBUF_PORT,
@@ -47,15 +59,35 @@ class CTradingAPI:
 
     def connected(self, client):
         self.is_connected = True
+        self.last_activity_time = time.time()
         logger.info("Connected to cTrader Open API")
         self.send_application_auth_request()
 
     def disconnected(self, client, reason):
         self.is_connected = False
         logger.warning(f"Disconnected from cTrader Open API: {reason}")
-        reactor.callLater(5, self.client.startService)
+        reactor.callLater(5, self.ensure_connection)
+
+    def ensure_connection(self):
+        if not self.is_connected:
+            logger.info("Attempting to reconnect...")
+            if self.client is None:
+                self.setup_client()
+            self.client.startService()
+        else:
+            self.check_keep_alive()
+
+    def check_keep_alive(self):
+        current_time = time.time()
+        if current_time - self.last_activity_time > self.keep_alive_interval:
+            logger.info("Sending keep-alive request")
+            self.send_keep_alive_request()
+
+    def send_keep_alive_request(self):
+        self.send_application_auth_request()
 
     def on_message_received(self, client, message):
+        self.last_activity_time = time.time()
         if message.payloadType == ProtoOAApplicationAuthRes().payloadType:
             logger.info("API Application authorized")
             self.send_account_auth_request()
@@ -94,10 +126,10 @@ class CTradingAPI:
             deferred = self.client.send(request)
             deferred.addCallback(lambda response: self.on_reconcile_received(response, symbol_id))
             deferred.addErrback(self.on_error)
-            return deferred
+            return deferred.addTimeout(Config.OPERATION_TIMEOUT, reactor)
         except Exception as e:
             logger.error(f"Error in get_existing_positions: {str(e)}")
-            return None
+            return defer.fail(e)
 
     def on_reconcile_received(self, response, symbol_id):
         try:
@@ -114,8 +146,22 @@ class CTradingAPI:
             logger.error(f"Error in on_reconcile_received: {str(e)}")
             return []
 
-    def send_new_order_request(self, symbol_id, order_type, trade_side, volume):
+    def process_order_queue(self):
+        while True:
+            order = self.order_queue.get()
+            if order is None:
+                break
+            self.ensure_connection()
+            if self.is_connected:
+                self.process_single_order(*order)
+            else:
+                logger.error("Failed to process order: Not connected to cTrader API")
+            self.order_queue.task_done()
+
+    def process_single_order(self, symbol_id, order_type, trade_side, volume):
         try:
+            logger.info(f"Processing order: Symbol ID: {symbol_id}, Trade Side: {trade_side}, Volume: {volume}")
+            
             def place_order(existing_positions):
                 if existing_positions is None:
                     logger.error("Failed to retrieve existing positions")
@@ -160,10 +206,14 @@ class CTradingAPI:
             deferred = self.get_existing_positions(int(symbol_id))
             deferred.addCallback(place_order)
             deferred.addErrback(self.on_error)
-            return True
+            return deferred
+
         except Exception as e:
-            logger.error(f"Error in send_new_order_request: {str(e)}")
-            return False
+            logger.error(f"Error in process_single_order: {str(e)}")
+            return defer.fail(e)
+
+    def send_new_order_request(self, symbol_id, order_type, trade_side, volume):
+        self.order_queue.put((symbol_id, order_type, trade_side, volume))
 
     def send_close_position_request(self, position_id, volume):
         try:
@@ -233,7 +283,7 @@ def webhook():
         if volume <= 0:
             return jsonify({"error": "Volume must be a positive number"}), 400
 
-        reactor.callLater(2, process_order, symbol_id, trade_side, volume)
+        ctrading_api.send_new_order_request(symbol_id, "MARKET", trade_side, volume)
 
         return jsonify({"status": "Order processing initiated"}), 202
 
@@ -243,17 +293,6 @@ def webhook():
     except Exception as e:
         logger.error(f"Unexpected error in webhook handler: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
-
-def process_order(symbol_id, trade_side, volume):
-    try:
-        logger.info(f"Processing order: Symbol ID: {symbol_id}, Trade Side: {trade_side}, Volume: {volume}")
-        success = ctrading_api.send_new_order_request(symbol_id, "MARKET", trade_side, volume)
-        if not success:
-            logger.error("Failed to place order")
-        else:
-            logger.info("Order processing completed successfully")
-    except Exception as e:
-        logger.error(f"Error in process_order: {str(e)}")
 
 def run_server(port, debug=False):
     try:
@@ -276,6 +315,8 @@ def main():
         parser.add_argument('--port', type=int, default=Config.PORT, help='Port to run the server on')
         args = parser.parse_args()
 
+        ctrading_api.setup_client()
+
         if args.test:
             logger.info("Running in test mode (no cTrader connection)")
             run_server(args.port, args.debug)
@@ -284,9 +325,9 @@ def main():
             if not args.debug:
                 ctrading_api.client.startService()
 
-                # Add a periodic check to ensure connection
-                l = task.LoopingCall(lambda: ctrading_api.client.startService() if not ctrading_api.is_connected else None)
-                l.start(60.0)  # Check every 60 seconds
+                # Add a periodic check to ensure connection and keep-alive
+                l = task.LoopingCall(ctrading_api.ensure_connection)
+                l.start(30.0)  # Check every 30 seconds
 
                 reactor.run()
     except Exception as e:
