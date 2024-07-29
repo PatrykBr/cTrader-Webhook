@@ -1,7 +1,6 @@
 import os
 import logging
 import json
-import time
 from flask import Flask, request, jsonify
 from functools import wraps
 from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
@@ -14,9 +13,11 @@ from twisted.internet import reactor, task, defer
 from twisted.web.wsgi import WSGIResource
 from twisted.web.server import Site
 from twisted.internet import endpoints
+from twisted.internet.defer import inlineCallbacks
+from twisted.internet.threads import deferToThread
 import argparse
-from queue import Queue
 import threading
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,27 +31,19 @@ class Config:
     ACCOUNT_ID = int(os.getenv("ACCOUNT_ID", "0"))
     AUTH_TOKEN = os.getenv("AUTH_TOKEN", "your_secure_token_here")
     PORT = int(os.environ.get("PORT", 5000))
-    OPERATION_TIMEOUT = 30  # 30 seconds timeout for operations
 
 app = Flask(__name__)
 
 class CTradingAPI:
     def __init__(self):
         self.is_connected = False
-        self.client = None
-        self.order_queue = Queue()
-        self.order_processing_thread = threading.Thread(target=self.process_order_queue)
-        self.order_processing_thread.start()
-        self.last_activity_time = 0
-        self.keep_alive_interval = 30  # seconds
-
-    def setup_client(self):
         self.client = Client(
             EndPoints.PROTOBUF_LIVE_HOST if Config.HOST_TYPE == "live" else EndPoints.PROTOBUF_DEMO_HOST,
             EndPoints.PROTOBUF_PORT,
             TcpProtocol
         )
         self.setup_client_callbacks()
+        self.order_semaphore = threading.Semaphore(1)
 
     def setup_client_callbacks(self):
         self.client.setConnectedCallback(self.connected)
@@ -59,35 +52,15 @@ class CTradingAPI:
 
     def connected(self, client):
         self.is_connected = True
-        self.last_activity_time = time.time()
         logger.info("Connected to cTrader Open API")
         self.send_application_auth_request()
 
     def disconnected(self, client, reason):
         self.is_connected = False
         logger.warning(f"Disconnected from cTrader Open API: {reason}")
-        reactor.callLater(5, self.ensure_connection)
-
-    def ensure_connection(self):
-        if not self.is_connected:
-            logger.info("Attempting to reconnect...")
-            if self.client is None:
-                self.setup_client()
-            self.client.startService()
-        else:
-            self.check_keep_alive()
-
-    def check_keep_alive(self):
-        current_time = time.time()
-        if current_time - self.last_activity_time > self.keep_alive_interval:
-            logger.info("Sending keep-alive request")
-            self.send_keep_alive_request()
-
-    def send_keep_alive_request(self):
-        self.send_application_auth_request()
+        reactor.callLater(5, self.client.startService)
 
     def on_message_received(self, client, message):
-        self.last_activity_time = time.time()
         if message.payloadType == ProtoOAApplicationAuthRes().payloadType:
             logger.info("API Application authorized")
             self.send_account_auth_request()
@@ -120,16 +93,15 @@ class CTradingAPI:
         except Exception as e:
             logger.error(f"Error in send_account_auth_request: {str(e)}")
 
+    @inlineCallbacks
     def get_existing_positions(self, symbol_id):
         try:
             request = ProtoOAReconcileReq(ctidTraderAccountId=Config.ACCOUNT_ID)
-            deferred = self.client.send(request)
-            deferred.addCallback(lambda response: self.on_reconcile_received(response, symbol_id))
-            deferred.addErrback(self.on_error)
-            return deferred.addTimeout(Config.OPERATION_TIMEOUT, reactor)
+            response = yield self.client.send(request)
+            return self.on_reconcile_received(response, symbol_id)
         except Exception as e:
             logger.error(f"Error in get_existing_positions: {str(e)}")
-            return defer.fail(e)
+            return None
 
     def on_reconcile_received(self, response, symbol_id):
         try:
@@ -146,75 +118,65 @@ class CTradingAPI:
             logger.error(f"Error in on_reconcile_received: {str(e)}")
             return []
 
-    def process_order_queue(self):
-        while True:
-            order = self.order_queue.get()
-            if order is None:
-                break
-            self.ensure_connection()
-            if self.is_connected:
-                self.process_single_order(*order)
-            else:
-                logger.error("Failed to process order: Not connected to cTrader API")
-            self.order_queue.task_done()
-
-    def process_single_order(self, symbol_id, order_type, trade_side, volume):
-        try:
-            logger.info(f"Processing order: Symbol ID: {symbol_id}, Trade Side: {trade_side}, Volume: {volume}")
-            
-            def place_order(existing_positions):
-                if existing_positions is None:
-                    logger.error("Failed to retrieve existing positions")
-                    return False
-
-                net_volume = volume
-                same_side_volume = 0
-                opposite_side = ProtoOATradeSide.SELL if trade_side == "BUY" else ProtoOATradeSide.BUY
-                
-                for position in existing_positions:
-                    if position.tradeData.tradeSide == ProtoOATradeSide.Value(trade_side):
-                        same_side_volume += position.tradeData.volume / 100
-                        self.send_close_position_request(position.positionId, position.tradeData.volume / 100)
-                    elif position.tradeData.tradeSide == opposite_side:
-                        position_volume = position.tradeData.volume / 100
-                        if position_volume <= net_volume:
-                            self.send_close_position_request(position.positionId, position_volume)
-                            net_volume -= position_volume
-                        else:
-                            self.send_close_position_request(position.positionId, net_volume)
-                            net_volume = 0
-                            break
-
-                total_volume = net_volume + same_side_volume
-                if total_volume > 0:
-                    request = ProtoOANewOrderReq(
-                        ctidTraderAccountId=Config.ACCOUNT_ID,
-                        symbolId=int(symbol_id),
-                        orderType=ProtoOAOrderType.Value(order_type.upper()),
-                        tradeSide=ProtoOATradeSide.Value(trade_side.upper()),
-                        volume=int(total_volume * 100)
-                    )
-                    deferred = self.client.send(request)
-                    deferred.addCallback(self.on_order_placed)
-                    deferred.addErrback(self.on_error)
-                    logger.info(f"Placing new order: {trade_side} {total_volume} lots")
-                else:
-                    logger.info("No new order placed after netting existing positions")
-                
-                return True
-
-            deferred = self.get_existing_positions(int(symbol_id))
-            deferred.addCallback(place_order)
-            deferred.addErrback(self.on_error)
-            return deferred
-
-        except Exception as e:
-            logger.error(f"Error in process_single_order: {str(e)}")
-            return defer.fail(e)
-
+    @inlineCallbacks
     def send_new_order_request(self, symbol_id, order_type, trade_side, volume):
-        self.order_queue.put((symbol_id, order_type, trade_side, volume))
+        try:
+            yield deferToThread(self.order_semaphore.acquire)
+            try:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        existing_positions = yield self.get_existing_positions(int(symbol_id))
+                        if existing_positions is None:
+                            logger.error("Failed to retrieve existing positions")
+                            return False
 
+                        net_volume = volume
+                        same_side_volume = 0
+                        opposite_side = ProtoOATradeSide.SELL if trade_side == "BUY" else ProtoOATradeSide.BUY
+                        
+                        for position in existing_positions:
+                            if position.tradeData.tradeSide == ProtoOATradeSide.Value(trade_side):
+                                same_side_volume += position.tradeData.volume / 100
+                                yield self.send_close_position_request(position.positionId, position.tradeData.volume / 100)
+                            elif position.tradeData.tradeSide == opposite_side:
+                                position_volume = position.tradeData.volume / 100
+                                if position_volume <= net_volume:
+                                    yield self.send_close_position_request(position.positionId, position_volume)
+                                    net_volume -= position_volume
+                                else:
+                                    yield self.send_close_position_request(position.positionId, net_volume)
+                                    net_volume = 0
+                                    break
+
+                        total_volume = net_volume + same_side_volume
+                        if total_volume > 0:
+                            request = ProtoOANewOrderReq(
+                                ctidTraderAccountId=Config.ACCOUNT_ID,
+                                symbolId=int(symbol_id),
+                                orderType=ProtoOAOrderType.Value(order_type.upper()),
+                                tradeSide=ProtoOATradeSide.Value(trade_side.upper()),
+                                volume=int(total_volume * 100)
+                            )
+                            yield self.client.send(request)
+                            logger.info(f"Placing new order: {trade_side} {total_volume} lots")
+                        else:
+                            logger.info("No new order placed after netting existing positions")
+                        
+                        return True
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Retry attempt {attempt + 1} due to error: {str(e)}")
+                            yield deferToThread(time.sleep, 1)  # Wait for 1 second before retrying
+                        else:
+                            raise
+            finally:
+                self.order_semaphore.release()
+        except Exception as e:
+            logger.error(f"Error in send_new_order_request: {str(e)}")
+            return False
+
+    @inlineCallbacks
     def send_close_position_request(self, position_id, volume):
         try:
             request = ProtoOAClosePositionReq(
@@ -222,9 +184,7 @@ class CTradingAPI:
                 positionId=position_id,
                 volume=int(volume * 100)
             )
-            deferred = self.client.send(request)
-            deferred.addCallback(self.on_position_closed)
-            deferred.addErrback(self.on_error)
+            yield self.client.send(request)
             logger.info(f"Closing position {position_id} with volume {volume}")
         except Exception as e:
             logger.error(f"Error in send_close_position_request: {str(e)}")
@@ -283,7 +243,7 @@ def webhook():
         if volume <= 0:
             return jsonify({"error": "Volume must be a positive number"}), 400
 
-        ctrading_api.send_new_order_request(symbol_id, "MARKET", trade_side, volume)
+        reactor.callLater(0, process_order, symbol_id, trade_side, volume)
 
         return jsonify({"status": "Order processing initiated"}), 202
 
@@ -293,6 +253,18 @@ def webhook():
     except Exception as e:
         logger.error(f"Unexpected error in webhook handler: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
+
+@inlineCallbacks
+def process_order(symbol_id, trade_side, volume):
+    try:
+        logger.info(f"Processing order: Symbol ID: {symbol_id}, Trade Side: {trade_side}, Volume: {volume}")
+        success = yield ctrading_api.send_new_order_request(symbol_id, "MARKET", trade_side, volume)
+        if not success:
+            logger.error("Failed to place order")
+        else:
+            logger.info("Order processing completed successfully")
+    except Exception as e:
+        logger.error(f"Error in process_order: {str(e)}")
 
 def run_server(port, debug=False):
     try:
@@ -315,8 +287,6 @@ def main():
         parser.add_argument('--port', type=int, default=Config.PORT, help='Port to run the server on')
         args = parser.parse_args()
 
-        ctrading_api.setup_client()
-
         if args.test:
             logger.info("Running in test mode (no cTrader connection)")
             run_server(args.port, args.debug)
@@ -325,9 +295,9 @@ def main():
             if not args.debug:
                 ctrading_api.client.startService()
 
-                # Add a periodic check to ensure connection and keep-alive
-                l = task.LoopingCall(ctrading_api.ensure_connection)
-                l.start(30.0)  # Check every 30 seconds
+                # Add a periodic check to ensure connection
+                l = task.LoopingCall(lambda: ctrading_api.client.startService() if not ctrading_api.is_connected else None)
+                l.start(60.0)  # Check every 60 seconds
 
                 reactor.run()
     except Exception as e:
